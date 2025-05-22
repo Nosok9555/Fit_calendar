@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FIT calendar</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="assets/icons/dumbbell-icon.png">
+    <link rel="apple-touch-icon" href="assets/icons/dumbbell-icon-512.png">
+    <meta name="theme-color" content="#4CAF50">
+</head>
+<body>
+    <div class="app">
+        <header>
+            <h1>FIT calendar</h1>
+            <nav>
+                <button class="nav-btn active" data-view="calendar">Календарь</button>
+                <button class="nav-btn" data-view="clients">Клиенты</button>
+            </nav>
+        </header>
+
+        <main>
+            <!-- Календарь -->
+            <section id="calendar-view" class="view active">
+                <div class="calendar-header">
+                    <button id="prev-month">&lt;</button>
+                    <h2 id="current-month"></h2>
+                    <button id="next-month">&gt;</button>
+                </div>
+                <div class="calendar-grid"></div>
+                <div class="daily-schedule" style="display: none;">
+                    <h3>Расписание на <span id="selected-date"></span></h3>
+                    <div class="time-slots"></div>
+                </div>
+            </section>
+
+            <!-- Клиенты -->
+            <section id="clients-view" class="view">
+                <div class="clients-header">
+                    <h2>Клиенты</h2>
+                    <button id="add-client-btn" class="primary-btn">+ Добавить клиента</button>
+                </div>
+                <div class="clients-list"></div>
+            </section>
+        </main>
+
+        <!-- Модальное окно добавления клиента -->
+        <div id="add-client-modal" class="modal">
+            <div class="modal-content">
+                <h2>Новый клиент</h2>
+                <form id="add-client-form">
+                    <div class="form-group">
+                        <label for="client-name">Имя</label>
+                        <input type="text" id="client-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="client-phone">Телефон</label>
+                        <input type="tel" id="client-phone" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="client-goals">Цели</label>
+                        <textarea id="client-goals"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="client-notes">Заметки</label>
+                        <textarea id="client-notes"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Тип тренировок</label>
+                        <div class="radio-group">
+                            <input type="radio" id="single" name="training-type" value="single" checked>
+                            <label for="single">Разовая</label>
+                            <input type="radio" id="module" name="training-type" value="module">
+                            <label for="module">Модульная</label>
+                        </div>
+                    </div>
+                    <div class="form-group" id="module-count-group" style="display: none;">
+                        <label for="module-count">Количество тренировок</label>
+                        <input type="number" id="module-count" min="1">
+                    </div>
+                    <div class="modal-buttons">
+                        <button type="button" class="secondary-btn" id="cancel-add-client">Отмена</button>
+                        <button type="submit" class="primary-btn">Сохранить</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Модальное окно записи на тренировку -->
+        <div id="add-training-modal" class="modal">
+            <div class="modal-content">
+                <h2>Запись на тренировку</h2>
+                <form id="add-training-form">
+                    <div class="form-group">
+                        <label for="training-client">Клиент</label>
+                        <select id="training-client" required></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="training-duration">Длительность</label>
+                        <select id="training-duration" required>
+                            <option value="60">1 час</option>
+                            <option value="90">1.5 часа</option>
+                            <option value="120">2 часа</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="notification-time">Уведомление за (минут)</label>
+                        <input type="number" id="notification-time" min="0" required>
+                    </div>
+                    <div class="modal-buttons">
+                        <button type="button" class="secondary-btn" id="cancel-add-training">Отмена</button>
+                        <button type="submit" class="primary-btn">Записать</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Модальное окно просмотра клиента -->
+        <div id="view-client-modal" class="modal">
+            <div class="modal-content">
+                <div class="client-tabs">
+                    <button class="tab-btn active" data-tab="info">Информация</button>
+                    <button class="tab-btn" data-tab="history">История</button>
+                    <button class="tab-btn" data-tab="schedule">Все записи</button>
+                </div>
+                <div class="tab-content">
+                    <div id="info-tab" class="tab-pane active">
+                        <div id="client-info"></div>
+                    </div>
+                    <div id="history-tab" class="tab-pane">
+                        <div id="client-history"></div>
+                    </div>
+                    <div id="schedule-tab" class="tab-pane">
+                        <div id="client-schedule"></div>
+                    </div>
+                </div>
+                <button class="close-btn" id="close-view-client">&times;</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+    <script>
+        // Регистрация Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(registration => {
+                        console.log('ServiceWorker registration successful');
+                    })
+                    .catch(err => {
+                        console.log('ServiceWorker registration failed: ', err);
+                    });
+            });
+        }
+    </script>
+</body>
+</html>
