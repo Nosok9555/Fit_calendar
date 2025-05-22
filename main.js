@@ -1,3 +1,5 @@
+'use strict';
+
 // Основные классы для работы с данными
 class Client {
     constructor(name, phone, goals, notes, trainingType, moduleCount = 0) {
@@ -17,21 +19,34 @@ class Training {
         this.id = Date.now().toString();
         this.clientId = clientId;
         this.date = date;
-        this.duration = duration;
+        this.duration = duration; // в минутах (60, 90 или 120)
         this.notificationTime = notificationTime;
         this.completed = false;
         this.moduleDeducted = false;
+        this.notificationSent = false;
+        this.endTime = new Date(new Date(date).getTime() + duration * 60000); // Время окончания тренировки
+    }
+
+    intersectsWith(other) {
+        let thisStart = new Date(this.date).getTime();
+        let thisEnd = new Date(this.endTime).getTime();
+        let otherStart = new Date(other.date).getTime();
+        let otherEnd = new Date(other.endTime).getTime();
+        return !(thisEnd <= otherStart || thisStart >= otherEnd);
+    }
+
+    includesTime(time) {
+        let timeMs = time.getTime();
+        return timeMs >= new Date(this.date).getTime() && timeMs < new Date(this.endTime).getTime();
     }
 }
 
-// Менеджер данных
 class DataManager {
     constructor() {
         this.clients = this.loadClients();
         this.trainings = this.loadTrainings();
     }
 
-    // Загрузка данных из localStorage
     loadClients() {
         return JSON.parse(localStorage.getItem('clients')) || [];
     }
@@ -40,7 +55,6 @@ class DataManager {
         return JSON.parse(localStorage.getItem('trainings')) || [];
     }
 
-    // Сохранение данных в localStorage
     saveClients() {
         localStorage.setItem('clients', JSON.stringify(this.clients));
     }
@@ -49,7 +63,6 @@ class DataManager {
         localStorage.setItem('trainings', JSON.stringify(this.trainings));
     }
 
-    // Методы работы с клиентами
     addClient(client) {
         this.clients.push(client);
         this.saveClients();
@@ -60,14 +73,13 @@ class DataManager {
     }
 
     updateClient(client) {
-        const index = this.clients.findIndex(c => c.id === client.id);
+        let index = this.clients.findIndex(c => c.id === client.id);
         if (index !== -1) {
             this.clients[index] = client;
             this.saveClients();
         }
     }
 
-    // Методы работы с тренировками
     addTraining(training) {
         this.trainings.push(training);
         this.saveTrainings();
@@ -78,7 +90,7 @@ class DataManager {
     }
 
     updateTraining(training) {
-        const index = this.trainings.findIndex(t => t.id === training.id);
+        let index = this.trainings.findIndex(t => t.id === training.id);
         if (index !== -1) {
             this.trainings[index] = training;
             this.saveTrainings();
@@ -89,12 +101,11 @@ class DataManager {
         return this.trainings.filter(training => training.clientId === clientId);
     }
 
-    // Автоматическое списание тренировок
     checkAndDeductModuleTrainings() {
-        const now = new Date();
+        let now = new Date();
         this.trainings.forEach(training => {
             if (!training.moduleDeducted && new Date(training.date) < now) {
-                const client = this.getClient(training.clientId);
+                let client = this.getClient(training.clientId);
                 if (client && client.trainingType === 'module' && client.moduleCount > 0) {
                     client.moduleCount--;
                     training.moduleDeducted = true;
@@ -106,10 +117,13 @@ class DataManager {
     }
 }
 
-// Менеджер уведомлений
 class NotificationManager {
-    constructor() {
+    constructor(dataManager) {
+        this.dataManager = dataManager;
         this.checkPermission();
+        this.initializeNotifications();
+        this.checkMissedNotifications();
+        setInterval(() => this.checkUpcomingNotifications(), 60000);
     }
 
     async checkPermission() {
@@ -120,26 +134,85 @@ class NotificationManager {
         }
     }
 
+    initializeNotifications() {
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.ready.then(registration => {
+                this.swRegistration = registration;
+            });
+        }
+    }
+
+    checkMissedNotifications() {
+        let now = new Date();
+        this.dataManager.trainings.forEach(training => {
+            if (!training.notificationSent) {
+                let client = this.dataManager.getClient(training.clientId);
+                let trainingTime = new Date(training.date);
+                let notificationTime = new Date(trainingTime.getTime() - training.notificationTime * 60000);
+
+                if (notificationTime <= now && now < trainingTime) {
+                    this.showNotification(training, client);
+                }
+            }
+        });
+    }
+
+    checkUpcomingNotifications() {
+        let now = new Date();
+        this.dataManager.trainings.forEach(training => {
+            if (!training.notificationSent) {
+                let client = this.dataManager.getClient(training.clientId);
+                let trainingTime = new Date(training.date);
+                let notificationTime = new Date(trainingTime.getTime() - training.notificationTime * 60000);
+
+                if (Math.abs(now.getTime() - notificationTime.getTime()) < 60000) {
+                    this.showNotification(training, client);
+                }
+            }
+        });
+    }
+
     scheduleNotification(training, client) {
         if (Notification.permission === 'granted') {
-            const notificationTime = new Date(training.date);
-            notificationTime.setMinutes(notificationTime.getMinutes() - training.notificationTime);
+            let trainingTime = new Date(training.date);
+            let notificationTime = new Date(trainingTime.getTime() - training.notificationTime * 60000);
+            let now = new Date();
 
-            const now = new Date();
             if (notificationTime > now) {
-                const timeout = notificationTime.getTime() - now.getTime();
-                setTimeout(() => {
-                    new Notification('Напоминание о тренировке', {
-                        body: `Тренировка с ${client.name} через ${training.notificationTime} минут`,
-                        icon: '/assets/icons/dumbbell-icon.png'
-                    });
-                }, timeout);
+                let notification = {
+                    id: training.id,
+                    time: notificationTime.getTime(),
+                    training: training,
+                    client: client
+                };
+
+                let scheduledNotifications = JSON.parse(localStorage.getItem('scheduledNotifications') || '[]');
+                scheduledNotifications.push(notification);
+                localStorage.setItem('scheduledNotifications', JSON.stringify(scheduledNotifications));
             }
+        }
+    }
+
+    showNotification(training, client) {
+        if (Notification.permission === 'granted') {
+            let notification = new Notification('Напоминание о тренировке', {
+                body: `Тренировка с ${client.name} через ${training.notificationTime} минут`,
+                icon: '/assets/icons/dumbbell-icon.png',
+                badge: '/assets/icons/dumbbell-icon.png',
+                tag: training.id,
+                renotify: true
+            });
+
+            training.notificationSent = true;
+            this.dataManager.updateTraining(training);
+
+            notification.onclick = () => {
+                window.focus();
+            };
         }
     }
 }
 
-// UI контроллер
 class UIController {
     constructor(dataManager, notificationManager) {
         this.dataManager = dataManager;
@@ -150,34 +223,20 @@ class UIController {
     }
 
     initializeUI() {
-        // Инициализация навигации
         document.querySelectorAll('.nav-btn').forEach(btn => {
             btn.addEventListener('click', () => this.switchView(btn.dataset.view));
         });
 
-        // Инициализация календаря
         this.updateCalendar();
         document.getElementById('prev-month').addEventListener('click', () => this.changeMonth(-1));
         document.getElementById('next-month').addEventListener('click', () => this.changeMonth(1));
 
-        // Инициализация форм
         this.initializeClientForm();
         this.initializeTrainingForm();
-
-        // Обработка модальных окон
         this.initializeModals();
-
-        // Первоначальное отображение данных
         this.renderClientsList();
-        
-        // Запуск проверки модульных тренировок
-        setInterval(() => {
-            this.dataManager.checkAndDeductModuleTrainings();
-            this.renderClientsList();
-        }, 60000); // Проверка каждую минуту
     }
 
-    // Переключение между представлениями
     switchView(viewName) {
         document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
         document.getElementById(`${viewName}-view`).classList.add('active');
@@ -187,10 +246,9 @@ class UIController {
         });
     }
 
-    // Методы работы с календарем
     updateCalendar() {
-        const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 
-                          'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+        let monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 
+                         'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
         
         document.getElementById('current-month').textContent = 
             `${monthNames[this.currentDate.getMonth()]} ${this.currentDate.getFullYear()}`;
@@ -199,38 +257,34 @@ class UIController {
     }
 
     renderCalendarDays() {
-        const calendarGrid = document.querySelector('.calendar-grid');
+        let calendarGrid = document.querySelector('.calendar-grid');
         calendarGrid.innerHTML = '';
 
-        const firstDay = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth(), 1);
-        const lastDay = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth() + 1, 0);
+        let firstDay = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth(), 1);
+        let lastDay = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth() + 1, 0);
 
-        // Добавление дней недели
-        const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+        let weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
         weekDays.forEach(day => {
-            const dayElement = document.createElement('div');
+            let dayElement = document.createElement('div');
             dayElement.className = 'calendar-day weekday';
             dayElement.textContent = day;
             calendarGrid.appendChild(dayElement);
         });
 
-        // Добавление пустых ячеек в начале месяца
         let firstDayOfWeek = firstDay.getDay() || 7;
         for (let i = 1; i < firstDayOfWeek; i++) {
             calendarGrid.appendChild(document.createElement('div'));
         }
 
-        // Добавление дней месяца
         for (let day = 1; day <= lastDay.getDate(); day++) {
-            const dayElement = document.createElement('div');
+            let dayElement = document.createElement('div');
             dayElement.className = 'calendar-day';
             dayElement.textContent = day;
 
-            const currentDate = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth(), day);
+            let currentDate = new Date(this.currentDate.getFullYear(), this.currentDate.getMonth(), day);
             
-            // Проверка наличия тренировок в этот день
-            const hasTrainings = this.dataManager.trainings.some(training => {
-                const trainingDate = new Date(training.date);
+            let hasTrainings = this.dataManager.trainings.some(training => {
+                let trainingDate = new Date(training.date);
                 return trainingDate.toDateString() === currentDate.toDateString();
             });
 
@@ -255,36 +309,67 @@ class UIController {
     }
 
     renderDailySchedule() {
-        const timeSlots = document.querySelector('.time-slots');
+        let timeSlots = document.querySelector('.time-slots');
         timeSlots.innerHTML = '';
 
-        // Создание временных слотов с 10:00 до 20:00
         for (let hour = 10; hour < 20; hour++) {
-            const timeSlot = document.createElement('div');
-            timeSlot.className = 'time-slot';
-            
-            const time = `${hour}:00`;
-            timeSlot.textContent = time;
+            for (let minutes = 0; minutes < 60; minutes += 30) {
+                let timeSlot = document.createElement('div');
+                timeSlot.className = 'time-slot';
+                
+                let time = `${hour}:${minutes.toString().padStart(2, '0')}`;
+                timeSlot.textContent = time;
 
-            // Проверка занятости слота
-            const slotDate = new Date(this.selectedDate);
-            slotDate.setHours(hour, 0, 0, 0);
+                let slotDate = new Date(this.selectedDate);
+                slotDate.setHours(hour, minutes, 0, 0);
 
-            const existingTraining = this.dataManager.trainings.find(training => {
-                const trainingDate = new Date(training.date);
-                return trainingDate.getTime() === slotDate.getTime();
-            });
+                let existingTraining = this.dataManager.trainings.find(training => {
+                    return training.includesTime(slotDate);
+                });
 
-            if (existingTraining) {
-                const client = this.dataManager.getClient(existingTraining.clientId);
-                timeSlot.classList.add('booked');
-                timeSlot.textContent = `${time} - ${client.name}`;
-            } else {
-                timeSlot.addEventListener('click', () => this.openAddTrainingModal(slotDate));
+                if (existingTraining) {
+                    let client = this.dataManager.getClient(existingTraining.clientId);
+                    let trainingDate = new Date(existingTraining.date);
+                    
+                    if (trainingDate.getHours() === hour && trainingDate.getMinutes() === minutes) {
+                        timeSlot.classList.add('booked', 'training-start');
+                        let duration = existingTraining.duration / 60;
+                        timeSlot.textContent = `${time} - ${client.name} (${duration} ч)`;
+                        
+                        let slots = existingTraining.duration / 30;
+                        timeSlot.style.height = `${slots * 100}%`;
+                    } else {
+                        timeSlot.classList.add('booked', 'training-continuation');
+                        timeSlot.style.display = 'none';
+                    }
+                } else {
+                    let canStartTraining = this.checkAvailableSlot(slotDate);
+                    if (canStartTraining) {
+                        timeSlot.addEventListener('click', () => this.openAddTrainingModal(slotDate));
+                    } else {
+                        timeSlot.classList.add('unavailable');
+                    }
+                }
+
+                timeSlots.appendChild(timeSlot);
             }
-
-            timeSlots.appendChild(timeSlot);
         }
+    }
+
+    checkAvailableSlot(startTime) {
+        let possibleDurations = [60, 90, 120];
+        return possibleDurations.some(duration => {
+            let endTime = new Date(startTime.getTime() + duration * 60000);
+            
+            let maxTime = new Date(startTime);
+            maxTime.setHours(20, 0, 0, 0);
+            if (endTime > maxTime) return false;
+
+            return !this.dataManager.trainings.some(training => {
+                let testTraining = new Training('test', startTime, duration, 0);
+                return training.intersectsWith(testTraining);
+            });
+        });
     }
 
     changeMonth(delta) {
@@ -294,12 +379,10 @@ class UIController {
         this.updateCalendar();
     }
 
-    // Методы работы с формами
     initializeClientForm() {
-        const form = document.getElementById('add-client-form');
-        const moduleCountGroup = document.getElementById('module-count-group');
+        let form = document.getElementById('add-client-form');
+        let moduleCountGroup = document.getElementById('module-count-group');
 
-        // Показ/скрытие поля количества тренировок
         document.querySelectorAll('input[name="training-type"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
                 moduleCountGroup.style.display = e.target.value === 'module' ? 'block' : 'none';
@@ -309,7 +392,7 @@ class UIController {
         form.addEventListener('submit', (e) => {
             e.preventDefault();
             
-            const client = new Client(
+            let client = new Client(
                 form.querySelector('#client-name').value,
                 form.querySelector('#client-phone').value,
                 form.querySelector('#client-goals').value,
@@ -326,20 +409,24 @@ class UIController {
     }
 
     initializeTrainingForm() {
-        const form = document.getElementById('add-training-form');
+        let form = document.getElementById('add-training-form');
 
         form.addEventListener('submit', (e) => {
             e.preventDefault();
 
-            const training = new Training(
+            let selectedDate = new Date(this.selectedDate);
+            let [hours, minutes] = form.querySelector('#training-time').value.split(':').map(Number);
+            selectedDate.setHours(hours, minutes, 0, 0);
+
+            let training = new Training(
                 form.querySelector('#training-client').value,
-                this.selectedDate,
+                selectedDate,
                 parseInt(form.querySelector('#training-duration').value),
                 parseInt(form.querySelector('#notification-time').value)
             );
 
             this.dataManager.addTraining(training);
-            const client = this.dataManager.getClient(training.clientId);
+            let client = this.dataManager.getClient(training.clientId);
             this.notificationManager.scheduleNotification(training, client);
             
             this.renderDailySchedule();
@@ -349,17 +436,14 @@ class UIController {
         });
     }
 
-    // Методы работы с модальными окнами
     initializeModals() {
-        // Закрытие модальных окон
         document.querySelectorAll('.modal .close-btn, .modal .secondary-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                const modal = btn.closest('.modal');
+                let modal = btn.closest('.modal');
                 this.closeModal(modal.id);
             });
         });
 
-        // Открытие модального окна добавления клиента
         document.getElementById('add-client-btn').addEventListener('click', () => {
             this.openModal('add-client-modal');
         });
@@ -374,28 +458,40 @@ class UIController {
     }
 
     openAddTrainingModal(date) {
-        const modal = document.getElementById('add-training-modal');
-        const clientSelect = modal.querySelector('#training-client');
+        let modal = document.getElementById('add-training-modal');
+        let clientSelect = modal.querySelector('#training-client');
         
-        // Заполнение списка клиентов
         clientSelect.innerHTML = '';
         this.dataManager.clients.forEach(client => {
-            const option = document.createElement('option');
+            let option = document.createElement('option');
             option.value = client.id;
             option.textContent = client.name;
             clientSelect.appendChild(option);
         });
 
+        let timeInput = document.createElement('input');
+        timeInput.type = 'time';
+        timeInput.id = 'training-time';
+        timeInput.required = true;
+        timeInput.value = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
+        
+        let timeGroup = document.createElement('div');
+        timeGroup.className = 'form-group';
+        timeGroup.innerHTML = '<label for="training-time">Время</label>';
+        timeGroup.appendChild(timeInput);
+        
+        let durationSelect = modal.querySelector('#training-duration').parentElement;
+        durationSelect.parentElement.insertBefore(timeGroup, durationSelect);
+
         this.openModal('add-training-modal');
     }
 
-    // Отображение списка клиентов
     renderClientsList() {
-        const clientsList = document.querySelector('.clients-list');
+        let clientsList = document.querySelector('.clients-list');
         clientsList.innerHTML = '';
 
         this.dataManager.clients.forEach(client => {
-            const clientCard = document.createElement('div');
+            let clientCard = document.createElement('div');
             clientCard.className = 'client-card';
             clientCard.innerHTML = `
                 <h3>${client.name}</h3>
@@ -409,11 +505,9 @@ class UIController {
         });
     }
 
-    // Просмотр информации о клиенте
     openClientView(client) {
-        const modal = document.getElementById('view-client-modal');
+        let modal = document.getElementById('view-client-modal');
         
-        // Заполнение вкладки информации
         document.getElementById('client-info').innerHTML = `
             <h3>${client.name}</h3>
             <p><strong>Телефон:</strong> ${client.phone}</p>
@@ -423,8 +517,7 @@ class UIController {
             <p><strong>Заметки:</strong> ${client.notes}</p>
         `;
 
-        // Заполнение вкладки истории
-        const history = this.dataManager.getClientTrainings(client.id)
+        let history = this.dataManager.getClientTrainings(client.id)
             .filter(training => new Date(training.date) < new Date())
             .sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -437,8 +530,7 @@ class UIController {
                 </div>
             `).join('') : '<p>История тренировок пуста</p>';
 
-        // Заполнение вкладки всех записей
-        const allTrainings = this.dataManager.getClientTrainings(client.id)
+        let allTrainings = this.dataManager.getClientTrainings(client.id)
             .sort((a, b) => new Date(a.date) - new Date(b.date));
 
         document.getElementById('client-schedule').innerHTML = allTrainings.length ?
@@ -453,7 +545,6 @@ class UIController {
 
         this.openModal('view-client-modal');
 
-        // Обработка переключения вкладок
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -466,9 +557,17 @@ class UIController {
     }
 }
 
-// Инициализация приложения
 document.addEventListener('DOMContentLoaded', () => {
-    const dataManager = new DataManager();
-    const notificationManager = new NotificationManager();
-    const uiController = new UIController(dataManager, notificationManager);
+    let dataManager = new DataManager();
+    let notificationManager = new NotificationManager(dataManager);
+    let uiController = new UIController(dataManager, notificationManager);
+
+    setInterval(() => {
+        dataManager.checkAndDeductModuleTrainings();
+        uiController.renderClientsList();
+        uiController.renderCalendarDays();
+        if (uiController.selectedDate) {
+            uiController.renderDailySchedule();
+        }
+    }, 60000);
 });
